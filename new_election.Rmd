@@ -9,6 +9,10 @@ library(tidyverse)
 ```
 
 ## Read and Clean data
+Data is available at http://electionresources.org/hu/data/2018.csv. 
+
+Alvarez  Rivera.,  M.  (2018).Elections to the hungarian national assembly.http://electionresources.org/hu/data/#ELECTIONS.  (Accessed:  2020-05-01)11
+
 ```{r}
 election  <-  read_csv('2018.csv', col_names=c('region_id','election_year','stat','votes_const','vote_perc','empty_1','empty_2','direct_seats','votes_national', 'national_perc', 'empty_3','list_seats','total_seats'))%>%
   select(c('region_id','stat','votes_const','vote_perc','votes_national', 'national_perc','direct_seats','total_seats','list_seats'))%>%
@@ -47,6 +51,7 @@ const_results <- election%>%
 ```
 
 ## Calaculate nr. of regional and national list seats
+The aim here is that the ratios between the different categories of seats are the same as in 2010 
 ```{r}
 regional_list_seats <-  as.integer(106*(152/176))
 national_list_seats <- as.integer(106*(58/176))
@@ -54,6 +59,7 @@ total_av_votes = region_stats_national$`Registered Electors`[1]
 cols = names(region_stats_national)
 ```
 
+## Allocate seats to regions
 ```{r}
 region_stats_national <- mutate(region_stats_national,available_seats_dec = regional_list_seats*(`Registered Electors`/(total_av_votes+1) ))%>%
   mutate(available_seats_int=floor(available_seats_dec))%>%
@@ -72,6 +78,9 @@ region_stats_national <-  select(region_stats_national,c(cols,'available_seats_i
 
 
 ##Calc regional list results
+This is based ased on 2018 national votes, seats are filled to meet quotas as described by Lublin.
+
+Lublin, D. (2014).Electoral systems hungary.http://www.electionpassport.com/electoral-systems/hungary/.  (Accessed:  2020-05-01
 ```{r}
 result <- national_vote[-1,-7:-10]
 carry_over <- national_vote[-1,]
@@ -96,6 +105,9 @@ for (i in 1:20){
 ```
 
 ##Calc carry over from individual constituencies and regions
+The added and subtracted numbers reflect the number of votes used to win a seat and are therfor not counted in the next round
+
+National  Election  Office.   (2018a).Election of members of parliament 2018 - the resultof individual constituencies.https://www.valasztas.hu/egyeni-valasztokeruletek-eredmenye.  (Accessed:  2020-05-01)
 ```{r}
 run_off <- direct_vote[1,2:6]
 run_off[1,1] <- direct_vote[2,2] + 21988 + 18541+ 21019 - 186460 + sum(carry_over[,2])
@@ -106,6 +118,7 @@ run_off[1,5] <- run_off[1,5] - 23345 + sum(carry_over[,6])
 
 colnames(run_off) = c('Fidesz','Jobbik','MSZP','DK','LMP')
 
+#Includes compensation for winning parties
 run_off_new  <- run_off
 run_off_new[1,1] <- run_off_new[1,1] + 913753
 run_off_new[1,2] <- run_off_new[1,2] + 1864
@@ -114,7 +127,9 @@ run_off_new[1,4] <- run_off_new[1,4] + 9659
 run_off_new[1,5] <- run_off_new[1,5] + 3314
 
 ```
-Define allocation function
+##Define allocation function. 
+This is an implementation d'Hahn method.
+National Election Office. (2018b).Informative data on the calculations of national list man-dates.file:///Users/johannes/Downloads/Orsz%C3%A1gos%20list%C3%A1s%20mand%C3%A1tumok%20sz%C3%A1m%C3%ADt%C3%A1sai%20(2).html.  (Accessed:  2020-05-01)
 ```{r}
 allocate <- function(votes, nr_seats){
   vote_table <- votes
@@ -136,6 +151,7 @@ allocate <- function(votes, nr_seats){
 
 ```
 
+##Allocate and aggregate votes
 ```{r}
 colnames(result) = c('region_id','Fidesz','Jobbik','MSZP','DK','LMP','Együtt','MOMENTUM','MKKP','Other','total_asigned' )
 nr_national <- national_list_seats + (regional_list_seats - sum(result$total_asigned))
@@ -166,7 +182,7 @@ sim_election_results_new = mutate(sim_election_results_new, percentage_seats_sim
 sim_election_results_new <- arrange(sim_election_results_new,desc(percentage_seats_sim_comp))
 
 ```
-
+## Plot Seats
 ```{r}
 
 real_election <- election[5:13,] %>% 
@@ -201,6 +217,8 @@ ggsave(
   device = 'pdf',
 )
 ```
+
+## Plot Seats with winner compensation
 ```{r}
 percentages_comp <- election_data_comp[1:5,c(1,3,7,9)]%>%
   pivot_longer(-party, names_to='stat',values_to='percentage')
