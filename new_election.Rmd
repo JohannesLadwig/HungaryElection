@@ -1,0 +1,345 @@
+---
+title: "Untitled"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+## Read and Clean data
+```{r}
+election  <-  read_csv('2018.csv', col_names=c('region_id','election_year','stat','votes_const','vote_perc','empty_1','empty_2','direct_seats','votes_national', 'national_perc', 'empty_3','list_seats','total_seats'))%>%
+  select(c('region_id','stat','votes_const','vote_perc','votes_national', 'national_perc','direct_seats','total_seats','list_seats'))%>%
+  mutate_at('votes_const', as.integer)%>%
+  mutate_at('votes_national', as.integer)%>%
+  mutate_at('direct_seats', as.integer)%>%
+  mutate_at('total_seats', as.integer)%>%
+  mutate_at('list_seats', as.integer)
+
+election$region_id[is.na( election$region_id)]=0
+
+region_stats_direct <- election%>%
+  select(c('region_id', 'stat', 'votes_const'))%>%
+  filter(stat== 'Registered Electors'|stat=='Voters'|stat=='Invalid Ballots'|stat=='Valid Votes')%>%
+  pivot_wider(names_from=stat, values_from=votes_const)
+
+region_stats_national <- election%>%
+  select(c('region_id', 'stat', 'votes_national'))%>%
+  filter(stat== 'Registered Electors'|stat=='Voters'|stat=='Invalid Ballots'|stat=='Valid Votes')%>%
+  pivot_wider(names_from=stat, values_from=votes_national)
+
+national_vote <- election%>%
+  select(c('region_id', 'stat', 'votes_national'))%>%
+  filter(stat!= 'Registered Electors' & stat!='Voters'& stat!='Invalid Ballots'& stat!='Valid Votes')%>%
+  pivot_wider(names_from=stat, values_from=votes_national)
+
+direct_vote <- election%>%
+  select(c('region_id', 'stat', 'votes_const'))%>%
+  filter(stat!= 'Registered Electors' & stat!='Voters'& stat!='Invalid Ballots'& stat!='Valid Votes')%>%
+  pivot_wider(names_from=stat, values_from=votes_const)
+
+const_results <- election%>%
+  select(c('region_id', 'stat', 'direct_seats'))%>%
+  filter(stat!= 'Registered Electors' & stat!='Voters'& stat!='Invalid Ballots'& stat!='Valid Votes')%>%
+  pivot_wider(names_from=stat, values_from='direct_seats')
+```
+
+## Calaculate nr. of regional and national list seats
+```{r}
+regional_list_seats <-  as.integer(106*(152/176))
+national_list_seats <- as.integer(106*(58/176))
+total_av_votes = region_stats_national$`Registered Electors`[1]
+cols = names(region_stats_national)
+```
+
+```{r}
+region_stats_national <- mutate(region_stats_national,available_seats_dec = regional_list_seats*(`Registered Electors`/(total_av_votes+1) ))%>%
+  mutate(available_seats_int=floor(available_seats_dec))%>%
+  mutate(remainder = available_seats_dec-available_seats_int)
+region_stats_national$available_seats_int[1] = region_stats_national$available_seats_int[1] + 1
+remaining_seats <- 2 * regional_list_seats - sum(region_stats_national$available_seats_int)
+ 
+high_rem <- arrange(region_stats_national,desc(remainder))$region_id[2:(remaining_seats+1)]
+for (region in high_rem){
+  region_stats_national$available_seats_int[region_stats_national$region_id == region] <-  region_stats_national$available_seats_int[region_stats_national$region_id == region] + 1
+}
+
+region_stats_national <-  select(region_stats_national,c(cols,'available_seats_int'))%>%
+  mutate(quota = `Valid Votes`/(available_seats_int+1))
+```
+
+
+##Calc regional list results
+```{r}
+result <- national_vote[-1,-7:-10]
+carry_over <- national_vote[-1,]
+result[c('Együtt','MOMENTUM','MKKP','Other')]=0
+
+for (i in 1:20){
+  for (p in 2:6){
+      nr_quotas <- result[i,p]/region_stats_national$quota[i+1]
+      nr_quotas_int = floor(nr_quotas)
+      remainder = nr_quotas - nr_quotas_int
+      if (remainder > 2/3){
+        nr_quotas_int = nr_quotas_int + 1
+        carry_over[i,p] <- floor((1-remainder) * region_stats_national$quota[i+1])
+      }else{
+        carry_over[i,p] <- floor(remainder * region_stats_national$quota[i+1])
+      }
+      result[i,p] <- nr_quotas_int
+  }
+  result[i,'total_asigned'] = sum(result[i,2:6])
+}
+
+```
+
+##Calc carry over from individual constituencies and regions
+```{r}
+run_off <- direct_vote[1,2:6]
+run_off[1,1] <- direct_vote[2,2] + 21988 + 18541+ 21019 - 186460 + sum(carry_over[,2])
+run_off[1,2] <- run_off[1,2] - 20405 + sum(carry_over[,3])
+run_off[1,3] <- run_off[1,3] - 211291 + sum(carry_over[,4])
+run_off[1,4] <- run_off[1,4] - 67048 + sum(carry_over[,5])
+run_off[1,5] <- run_off[1,5] - 23345 + sum(carry_over[,6])
+
+colnames(run_off) = c('Fidesz','Jobbik','MSZP','DK','LMP')
+
+run_off_new  <- run_off
+run_off_new[1,1] <- run_off_new[1,1] + 913753
+run_off_new[1,2] <- run_off_new[1,2] + 1864
+run_off_new[1,3] <- run_off_new[1,3] + 43751
+run_off_new[1,4] <- run_off_new[1,4] + 9659
+run_off_new[1,5] <- run_off_new[1,5] + 3314
+
+```
+Define allocation function
+```{r}
+allocate <- function(votes, nr_seats){
+  vote_table <- votes
+  seats <- votes
+  seats[] <- 0
+  
+  for (i in 2:nr_seats){
+    vote_table <- bind_rows(vote_table, votes/i)
+  }
+  i <- nr_seats
+  while(i>0){
+    max_votes <- which.max(vote_table[1,])
+    seats[max_votes] <- seats[max_votes] + 1
+    vote_table[,max_votes] <- vote_table[2:nr_seats, max_votes][1:nr_seats,]
+    i <- i - 1
+  }
+  return(seats)
+}
+
+```
+
+```{r}
+colnames(result) = c('region_id','Fidesz','Jobbik','MSZP','DK','LMP','Együtt','MOMENTUM','MKKP','Other','total_asigned' )
+nr_national <- national_list_seats + (regional_list_seats - sum(result$total_asigned))
+final_seats <- allocate(run_off, nr_national)
+final_seats_new <- allocate(run_off_new, nr_national)
+final_seats[c('Együtt','MOMENTUM','MKKP','Other')]=0
+final_seats_new[c('Együtt','MOMENTUM','MKKP','Other')]=0
+for(party in colnames(final_seats)){
+  final_seats[1,party] = final_seats[1,party] + sum(result[,party])
+  final_seats_new[1,party] = final_seats_new[1,party] + sum(result[,party])
+}
+
+colnames(const_results) = c('region_id','Fidesz','Jobbik','MSZP','DK','LMP','Együtt','MOMENTUM','MKKP','Other')
+for(party in colnames(final_seats)){
+  final_seats[1,party] = final_seats[1,party] + const_results[1,party]
+  final_seats_new[1,party] = final_seats_new[1,party] + const_results[1,party]
+}
+sim_election_results <- as.data.frame(t(final_seats))
+sim_election_results <- rownames_to_column(sim_election_results)
+colnames(sim_election_results) <- c('party','seats')
+sim_election_results = mutate(sim_election_results, percentage_seats = 100 * round(seats/sum(seats), digits = 3))
+sim_election_results <- arrange(sim_election_results,desc(percentage_seats))
+
+sim_election_results_new <- as.data.frame(t(final_seats_new))
+sim_election_results_new <- rownames_to_column(sim_election_results_new)
+colnames(sim_election_results_new) <- c('party','seats_sim_comp')
+sim_election_results_new = mutate(sim_election_results_new, percentage_seats_sim_comp = 100 * round(seats_sim_comp/sum(seats_sim_comp), digits = 3))
+sim_election_results_new <- arrange(sim_election_results_new,desc(percentage_seats_sim_comp))
+
+```
+
+```{r}
+
+real_election <- election[5:13,] %>% 
+  select(c('party' = "stat", 'seats' = "total_seats","votes_const", "votes_national"))%>%
+  mutate(percentage_seats = 100 * round(seats/sum(seats), digits = 3))%>%
+  mutate(vote_total = votes_const + votes_national)%>%
+  mutate(vote_total_percent = 100 * round(vote_total/sum(vote_total), digits = 3))%>%
+  select(c('party', 'seats','percentage_seats', 'vote_total', 'vote_total_percent'))
+
+real_election$party <-  c('Fidesz','Jobbik','MSZP','DK','LMP', 'Együtt', 'MOMENTUM', 'MKKP', 'Other')
+
+
+election_data <-  full_join(real_election, sim_election_results, by='party', suffix=c('_real','_sim'))
+
+election_data_comp <- full_join(election_data, sim_election_results_new, by='party')
+
+percentages <- election_data[1:5,c(1,3,7,5)]%>%
+  pivot_longer(-party, names_to='stat',values_to='percentage')
+
+ggplot(percentages, aes(x = reorder(party, -percentage), y=percentage, fill= stat)) +
+  geom_bar(width = 0.95, stat = "identity", color='white', position="dodge") +
+  #geom_text(aes(label = percentage)) +
+  xlab("Party") +
+  ylab("%")+
+  scale_fill_discrete(name = "Legend", labels = c('Seat Distribution 2018','Simulated Seat Distribution','Vote Share')) +
+  theme_minimal()
+ggsave(
+  'seats.pdf',
+  plot = last_plot(),
+  scale = 1,
+  dpi = 500,
+  device = 'pdf',
+)
+```
+```{r}
+percentages_comp <- election_data_comp[1:5,c(1,3,7,9)]%>%
+  pivot_longer(-party, names_to='stat',values_to='percentage')
+
+ggplot(percentages_comp, aes(x = reorder(party, -percentage), y=percentage, fill= stat)) +
+  geom_bar(width = 0.95, stat = "identity", color='white', position="dodge") +
+  #geom_text(aes(label = percentage)) +
+  xlab("Party") +
+  ylab("%") +
+  scale_fill_discrete(name = "Source", labels = c('True Seat Distribution','Simulated Seat Distribution','Simulated Seat Distribution \nwith Compensation ')) +
+  theme_minimal() 
+ggsave(
+  'compensation.pdf',
+  plot = last_plot(),
+  scale = 1,
+  dpi = 500,
+  device = 'pdf',
+)
+```
+
+```{r}
+seat_value <-  election_data_comp[c(1:6),]%>%
+  mutate(value_real = vote_total/seats_real)%>%
+  mutate(value_real =  (value_real/mean(value_real)))%>%
+  mutate(value_sim = vote_total/seats_sim)%>%
+  mutate(value_sim = (value_sim/mean(value_sim)))%>%
+  mutate(value_sim_comp = vote_total/seats_sim_comp)%>%
+  mutate(value_sim_comp = value_sim_comp/mean(value_sim_comp))%>%
+  select('party','value_real','value_sim')%>%
+  pivot_longer(-party, names_to='stat',values_to='normalized_seat_values')
+
+
+ggplot(seat_value, aes(x = reorder(party, normalized_seat_values), y=normalized_seat_values, fill= stat)) +
+  geom_bar(width = 0.95, stat = "identity", color='white', position="dodge") +
+  #geom_text(aes(label = percentage)) +
+  xlab("Party") +
+  ylab("Normalized Votes per Seat") +
+  scale_fill_discrete(name = "Legend", labels = c('True Seat Value','Simulated Seat Value')) +
+  theme_minimal() 
+
+ggsave(
+  'vote_value.pdf',
+  plot = last_plot(),
+  scale = 1,
+  dpi = 500,
+  device = 'pdf',
+)
+
+```
+
+```{r}
+first_round_votes_seat <- direct_vote[1,2:6]
+first_round_votes_seat[1,1] <- direct_vote[1,2] - (direct_vote[2,2] + 21988 + 18541+ 21019 - 186460)
+first_round_votes_seat[1,2] <- 20405 
+first_round_votes_seat[1,3] <- 211291 
+first_round_votes_seat[1,4] <- 67048 
+first_round_votes_seat[1,5] <- 23345 
+
+colnames(first_round_votes_seat) = c('Fidesz','Jobbik','MSZP','DK','LMP')
+
+first_round_votes_seat[2,1] <- first_round_votes_seat[1,1]- 913753
+first_round_votes_seat[2,2] <-first_round_votes_seat[1,2]- 1864
+first_round_votes_seat[2,3] <- first_round_votes_seat[1,3]- 43751
+first_round_votes_seat[2,4] <- first_round_votes_seat[1,4]-9659
+first_round_votes_seat[2,5] <- first_round_votes_seat[1,5]- 3314
+
+first_round_votes_seat <- as.data.frame(t(first_round_votes_seat))
+first_round_votes_seat <- rownames_to_column(first_round_votes_seat)
+colnames(first_round_votes_seat) <- c('party','votes_used','votes_used_comp')
+for (party in 1:5) {
+  first_round_votes_seat[party,'votes_per_seat'] <- first_round_votes_seat[party,'votes_used'] /const_results[1,1+party]
+  first_round_votes_seat[party,'votes_per_seat_comp'] <- first_round_votes_seat[party,'votes_used_comp'] /const_results[1,1+party]
+
+}
+
+direct_round_plot <- select(first_round_votes_seat,c('party','votes_per_seat','votes_per_seat_comp'))%>%
+  pivot_longer(-party, names_to='stat',values_to='votes_per_seat')
+
+
+
+```
+```{r}
+ggplot(direct_round_plot, aes(x = party, y=votes_per_seat, fill= stat)) +
+  geom_bar(width = 0.95, stat = "identity", color='white', position="dodge") +
+  #geom_text(aes(label = percentage)) +
+  xlab("Party") +
+  ylab("Votes per Seat") +
+  scale_fill_discrete(name = "Directly elected seats", labels = c('No compensation','With compensation for winner ')) +
+  theme_minimal() 
+ggsave(
+  'vote_value_comp_no_comp.pdf',
+  plot = last_plot(),
+  scale = 1,
+  dpi = 500,
+  device = 'pdf',
+)
+```
+```{r}
+national_list <- election[5:9,] %>% 
+  select(c('party' = "stat", 'seats' = "list_seats", "votes_const", "votes_national"))%>%
+  mutate(vote_total = votes_const + votes_national)%>%
+  select(c('party', 'seats', 'vote_total'))
+
+national_list$party <-  c('Fidesz','Jobbik','MSZP','DK','LMP')
+national_list['no_comp'] = national_list$vote_total - first_round_votes_seat$votes_used
+national_list['comp'] = national_list$vote_total - first_round_votes_seat$votes_used_comp
+national_list <- select(national_list, c('party','seats','no_comp','comp'))
+
+comparison_direct_list = direct_round_plot[1,]
+comparison_direct_list[1:2,1] <-  'national list'
+comparison_direct_list[1:2,2] <- c('votes_per_seat','votes_per_seat_comp')
+comparison_direct_list[1,3] <- sum(national_list$no_comp)/sum(national_list$seats)
+comparison_direct_list[2,3] <- sum(national_list$comp)/sum(national_list$seats)
+
+comparison_direct_list[3:4,1] <-  'direct seats'
+comparison_direct_list[3:4,2] <- c('votes_per_seat','votes_per_seat_comp')
+comparison_direct_list[3,3] <- sum(first_round_votes_seat$votes_used)/sum(const_results[1,2:6])
+comparison_direct_list[4,3] <- sum(first_round_votes_seat$votes_used_comp)/sum(const_results[1,2:6])
+
+
+
+```
+```{r}
+ggplot(comparison_direct_list, aes(x = party, y=votes_per_seat, fill= stat)) +
+  geom_bar(width = 0.8, stat = "identity", color='white', position="dodge") +
+  #geom_text(aes(label = percentage)) +
+  xlab("Seat Type") +
+  ylab("Mean Votes per Seat") +
+  scale_fill_discrete(name = "Method", labels = c('No compensation','With compensation for winner ', 'Mean requirement for Majority')) +
+  theme_minimal() 
+ggsave(
+  'vote_value_list_direct.pdf',
+  plot = last_plot(),
+  scale = 1,
+  dpi = 500,
+  device = 'pdf',
+)
+```
+
+
+
+
